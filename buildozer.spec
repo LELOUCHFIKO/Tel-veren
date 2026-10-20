@@ -5,13 +5,13 @@ package.domain = az.mmu
 source.dir = .
 source.include_exts = py,png,jpg,csv
 version = 1.0
-requirements = python3,kivy==2.3.0
+requirements = python3,kivy==2.3.0,requests,openssl
 orientation = portrait
 fullscreen = 0
 icon.filename = %(source.dir)s/assets/logo.png
 presplash.filename = %(source.dir)s/assets/logo.png
-android.presplash_color = #101418
-android.permissions = WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
+android.presplash_color = #080809
+android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
 android.api = 31
 android.minapi = 21
 android.ndk = 25b
