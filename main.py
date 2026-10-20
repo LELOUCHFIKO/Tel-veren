@@ -8,7 +8,7 @@ from xml.sax.saxutils import escape
 
 from kivy.app import App
 from kivy.core.window import Window
-from kivy.graphics import Color, Rectangle
+from kivy.graphics import Color, Rectangle, RoundedRectangle
 from kivy.metrics import dp
 from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
@@ -25,17 +25,17 @@ from kivy.uix.togglebutton import ToggleButton
 HERE = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = "tel_veren_v2.db"
 GROUPS = ["5", "9", "13", "14", "17", "18", "22", "23", "25", "71"]
-MAX_USERS = 12
+MAX_USERS = 20
 DATE_FMT = "%d.%m.%Y %H:%M"
 
-BG = (0.06, 0.08, 0.11, 1)
-CARD = (0.11, 0.14, 0.19, 1)
-ACCENT = (0.16, 0.5, 0.85, 1)
-GREEN = (0.18, 0.62, 0.35, 1)
-RED = (0.78, 0.24, 0.24, 1)
-GREY = (0.26, 0.3, 0.36, 1)
-TEXT = (0.93, 0.95, 0.97, 1)
-MUTED = (0.6, 0.66, 0.73, 1)
+BG = (0.03, 0.03, 0.04, 1)
+CARD = (0.11, 0.11, 0.13, 1)
+CARD2 = (0.18, 0.18, 0.21, 1)
+PINK = (0.996, 0.173, 0.333, 1)
+CYAN = (0.145, 0.957, 0.933, 1)
+GREEN = (0.19, 0.82, 0.55, 1)
+TEXT = (1, 1, 1, 1)
+MUTED = (0.62, 0.62, 0.67, 1)
 
 
 def sha(text):
@@ -43,7 +43,7 @@ def sha(text):
 
 
 def info(title, text):
-    Popup(title=title, title_color=ACCENT,
+    Popup(title=title, title_color=CYAN, separator_color=PINK,
           content=Label(text=text, color=TEXT),
           size_hint=(0.85, 0.35)).open()
 
@@ -53,9 +53,62 @@ def lbl(text, **kw):
     return Label(text=text, **kw)
 
 
-def btn(text, fn=None, color=ACCENT, **kw):
-    b = Button(text=text, color=TEXT, background_normal="",
-               background_color=color, **kw)
+def wrap(widget):
+    widget.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
+    return widget
+
+
+class RBtn(Button):
+    # dairəvi düymə: rəngi kanvasda çəkirik
+    def __init__(self, bg=CARD2, radius=16, **kw):
+        kw.setdefault("color", TEXT)
+        super().__init__(**kw)
+        self.background_normal = ""
+        self.background_down = ""
+        self.background_color = (0, 0, 0, 0)
+        self._base = bg
+        with self.canvas.before:
+            self._col = Color(*bg)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(radius)])
+        self.bind(pos=self._sync, size=self._sync, state=self._paint)
+
+    def _sync(self, *a):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+
+    def _paint(self, *a):
+        if self.state == "down":
+            b = self._base
+            self._col.rgba = (b[0] * 0.75, b[1] * 0.75, b[2] * 0.75, 1)
+        else:
+            self._col.rgba = self._base
+
+
+class RToggle(ToggleButton):
+    def __init__(self, on=GREEN, off=CARD2, radius=14, **kw):
+        kw.setdefault("color", TEXT)
+        super().__init__(**kw)
+        self.background_normal = ""
+        self.background_down = ""
+        self.background_color = (0, 0, 0, 0)
+        self._on = on
+        self._off = off
+        with self.canvas.before:
+            self._col = Color(*off)
+            self._rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[dp(radius)])
+        self.bind(pos=self._sync, size=self._sync, state=self._paint)
+        self._paint()
+
+    def _sync(self, *a):
+        self._rect.pos = self.pos
+        self._rect.size = self.size
+
+    def _paint(self, *a):
+        self._col.rgba = self._on if self.state == "down" else self._off
+
+
+def btn(text, fn=None, bg=PINK, **kw):
+    b = RBtn(text=text, bg=bg, **kw)
     if fn:
         b.bind(on_release=fn)
     return b
@@ -63,28 +116,17 @@ def btn(text, fn=None, color=ACCENT, **kw):
 
 def field(hint, password=False):
     return TextInput(hint_text=hint, password=password, multiline=False,
-                     size_hint_y=None, height=dp(46), foreground_color=TEXT,
-                     hint_text_color=MUTED, background_color=CARD)
+                     size_hint_y=None, height=dp(48), foreground_color=TEXT,
+                     hint_text_color=MUTED, background_normal="",
+                     background_active="", background_color=CARD2,
+                     cursor_color=CYAN, padding=[dp(14), dp(14)])
 
 
-def wrap(widget):
-    widget.bind(size=lambda w, s: setattr(w, "text_size", (s[0], None)))
-    return widget
-
-
-def style_toggle(tb, on_color):
-    def upd(*_):
-        tb.background_color = on_color if tb.state == "down" else GREY
-    tb.background_normal = ""
-    tb.bind(state=upd)
-    upd()
-
-
-def panel(**kw):
+def panel(radius=18, **kw):
     box = BoxLayout(**kw)
     with box.canvas.before:
         Color(*CARD)
-        rect = Rectangle(pos=box.pos, size=box.size)
+        rect = RoundedRectangle(pos=box.pos, size=box.size, radius=[dp(radius)])
     box.bind(pos=lambda w, p: setattr(rect, "pos", p),
              size=lambda w, s: setattr(rect, "size", s))
     return box
@@ -222,17 +264,20 @@ class DB:
 class SetupScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
-        box = BoxLayout(orientation="vertical", padding=dp(30), spacing=dp(12))
-        box.add_widget(lbl("İlk quraşdırma\nAdmin hesabı yaradın", markup=False,
-                           font_size=dp(20), bold=True, size_hint_y=0.25))
+        box = BoxLayout(orientation="vertical", padding=dp(28), spacing=dp(14))
+        box.add_widget(lbl("İlk quraşdırma", font_size=dp(24), bold=True,
+                           color=CYAN, size_hint_y=None, height=dp(40)))
+        box.add_widget(lbl("Admin hesabı yaradın", color=MUTED,
+                           size_hint_y=None, height=dp(28)))
         self.user_in = field("Admin istifadəçi adı")
         self.pwd_in = field("Şifrə (ən azı 4 simvol)", password=True)
         self.pwd2_in = field("Şifrəni təkrar yazın", password=True)
         box.add_widget(self.user_in)
         box.add_widget(self.pwd_in)
         box.add_widget(self.pwd2_in)
-        box.add_widget(btn("Admin yarat", self.create, GREEN,
-                           size_hint_y=None, height=dp(50)))
+        box.add_widget(btn("Admin yarat", self.create, PINK,
+                           size_hint_y=None, height=dp(52)))
+        box.add_widget(lbl(""))
         self.add_widget(box)
 
     def create(self, *a):
@@ -252,18 +297,19 @@ class SetupScreen(BaseScreen):
 class LoginScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
-        box = BoxLayout(orientation="vertical", padding=dp(30), spacing=dp(12))
+        box = BoxLayout(orientation="vertical", padding=dp(28), spacing=dp(14))
         logo = os.path.join(HERE, "assets", "logo.png")
         if os.path.exists(logo):
             box.add_widget(Image(source=logo, size_hint_y=0.45))
-        box.add_widget(lbl("Tel verən və verməyən", font_size=dp(22),
-                           bold=True, size_hint_y=0.12))
+        box.add_widget(lbl("Tel verən və verməyən", font_size=dp(24), bold=True,
+                           color=CYAN, size_hint_y=None, height=dp(44)))
         self.user_in = field("İstifadəçi adı")
         self.pwd_in = field("Şifrə", password=True)
         box.add_widget(self.user_in)
         box.add_widget(self.pwd_in)
-        box.add_widget(btn("Daxil ol", self.login, ACCENT,
-                           size_hint_y=None, height=dp(50)))
+        box.add_widget(btn("Daxil ol", self.login, PINK,
+                           size_hint_y=None, height=dp(52)))
+        box.add_widget(lbl(""))
         self.add_widget(box)
 
     def login(self, *a):
@@ -284,21 +330,22 @@ class MainScreen(BaseScreen):
         self.rows = {}
         self.last = {}
         self.pending = {}
-        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
-        self.header = lbl("", size_hint_y=None, height=dp(32), bold=True, color=ACCENT)
+        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(10))
+        self.header = lbl("", size_hint_y=None, height=dp(30), bold=True,
+                          color=CYAN, halign="left")
         self.spinner = Spinner(size_hint_y=None, height=dp(46), background_normal="",
-                               background_color=ACCENT, color=TEXT)
+                               background_color=CARD2, color=TEXT)
         self.spinner.bind(text=lambda *a: self.build_list())
         self.list_box = GridLayout(cols=1, size_hint_y=None, spacing=dp(8))
         self.list_box.bind(minimum_height=self.list_box.setter("height"))
         scroll = ScrollView()
         scroll.add_widget(self.list_box)
-        bar = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
-        self.admin_btn = btn("Admin", lambda *a: self.open("admin"), GREY)
+        bar = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(6))
+        self.admin_btn = btn("Admin", lambda *a: self.open("admin"), CARD2)
         bar.add_widget(btn("Yadda saxla", self.save, GREEN))
-        bar.add_widget(btn("Tarixçə", lambda *a: self.open("history"), ACCENT))
+        bar.add_widget(btn("Tarixçə", lambda *a: self.open("history"), CARD2))
         bar.add_widget(self.admin_btn)
-        bar.add_widget(btn("Çıxış", self.logout, RED))
+        bar.add_widget(btn("Çıxış", self.logout, PINK))
         for w in (self.header, self.spinner, scroll, bar):
             box.add_widget(w)
         self.add_widget(box)
@@ -307,7 +354,7 @@ class MainScreen(BaseScreen):
         u = App.get_running_app().user
         groups = allowed_groups(u)
         self.pending = {}
-        self.header.text = "Daxil olub: %s" % u["username"]
+        self.header.text = "Salam, %s" % u["username"]
         self.spinner.values = groups
         self.spinner.text = groups[0]
         self.admin_btn.opacity = 1 if u["is_admin"] else 0
@@ -335,22 +382,20 @@ class MainScreen(BaseScreen):
         else:
             status, reason = None, ""
 
-        card = panel(orientation="vertical", size_hint_y=None, height=dp(56),
-                     padding=dp(6), spacing=dp(4))
-        top = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(4))
-        top.add_widget(lbl(str(t["number"]), size_hint_x=0.12, bold=True, color=ACCENT))
+        card = panel(orientation="vertical", size_hint_y=None, height=dp(62),
+                     padding=dp(8), spacing=dp(6))
+        top = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        top.add_widget(lbl(str(t["number"]), size_hint_x=0.12, bold=True, color=CYAN))
         top.add_widget(wrap(lbl(t["name"], halign="left", size_hint_x=0.4)))
-        yes = ToggleButton(text="Bəli", group="t%d" % tid, size_hint_x=0.16,
-                           state="down" if status == "Bəli" else "normal")
-        no = ToggleButton(text="Xeyr", group="t%d" % tid, size_hint_x=0.16,
-                          state="down" if status == "Xeyr" else "normal")
-        style_toggle(yes, GREEN)
-        style_toggle(no, RED)
+        yes = RToggle(text="Bəli", group="t%d" % tid, on=GREEN, size_hint_x=0.16,
+                      state="down" if status == "Bəli" else "normal")
+        no = RToggle(text="Xeyr", group="t%d" % tid, on=PINK, size_hint_x=0.16,
+                     state="down" if status == "Xeyr" else "normal")
         top.add_widget(yes)
         top.add_widget(no)
         if app.user["is_admin"]:
             top.add_widget(btn("Sil", lambda *a, tid=tid: self.delete_trainee(tid),
-                               RED, size_hint_x=0.16))
+                               CARD2, size_hint_x=0.16))
         reason_in = field("Niyə telefonu verməyib?")
         reason_in.height = 0
         reason_in.opacity = 0
@@ -364,8 +409,8 @@ class MainScreen(BaseScreen):
             shown = no.state == "down"
             reason_in.opacity = 1 if shown else 0
             reason_in.disabled = not shown
-            reason_in.height = dp(46) if shown else 0
-            card.height = dp(104) if shown else dp(56)
+            reason_in.height = dp(48) if shown else 0
+            card.height = dp(116) if shown else dp(62)
 
         def sync(*_):
             if yes.state == "down":
@@ -400,11 +445,11 @@ class MainScreen(BaseScreen):
         self.build_list()
 
     def delete_trainee(self, tid):
-        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
-        p = Popup(title="Silinsin?", title_color=ACCENT, content=box,
-                  size_hint=(0.85, 0.35))
+        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(10))
+        p = Popup(title="Silinsin?", title_color=CYAN, separator_color=PINK,
+                  content=box, size_hint=(0.85, 0.35))
         box.add_widget(lbl("Kursant siyahıdan silinsin?\nTarixçə qalacaq."))
-        row = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
+        row = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(6))
 
         def yes(*a):
             App.get_running_app().db.run("DELETE FROM trainees WHERE id=?", (tid,))
@@ -412,8 +457,8 @@ class MainScreen(BaseScreen):
             p.dismiss()
             self.build_list()
 
-        row.add_widget(btn("Bəli, sil", yes, RED))
-        row.add_widget(btn("Xeyr", lambda *a: p.dismiss(), GREY))
+        row.add_widget(btn("Bəli, sil", yes, PINK))
+        row.add_widget(btn("Xeyr", lambda *a: p.dismiss(), CARD2))
         box.add_widget(row)
         p.open()
 
@@ -430,62 +475,69 @@ class MainScreen(BaseScreen):
 class AdminScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
+        root = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        top = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
+        top.add_widget(btn("← Geri", lambda *a: setattr(self.manager, "current", "main"),
+                           CARD2, size_hint_x=0.32))
+        top.add_widget(lbl("Admin paneli", bold=True, color=CYAN, font_size=dp(18)))
         scroll = ScrollView()
-        self.box = GridLayout(cols=1, size_hint_y=None, spacing=dp(10), padding=dp(10))
+        self.box = GridLayout(cols=1, size_hint_y=None, spacing=dp(10), padding=dp(4))
         self.box.bind(minimum_height=self.box.setter("height"))
         scroll.add_widget(self.box)
-        self.add_widget(scroll)
+        root.add_widget(top)
+        root.add_widget(scroll)
+        self.add_widget(root)
 
     def load(self):
         app = App.get_running_app()
         self.box.clear_widgets()
         users = app.db.q("SELECT * FROM users ORDER BY id")
         self.box.add_widget(lbl("İstifadəçilər (%d/%d)" % (len(users), MAX_USERS),
-                                size_hint_y=None, height=dp(32), bold=True, color=ACCENT))
+                                size_hint_y=None, height=dp(30), bold=True, color=CYAN))
         for u in users:
-            row = panel(size_hint_y=None, height=dp(50), padding=dp(6), spacing=dp(6))
-            tag = "  (admin)" if u["is_admin"] else ""
+            row = panel(size_hint_y=None, height=dp(54), padding=dp(8), spacing=dp(8))
+            tag = "  · admin" if u["is_admin"] else ""
             row.add_widget(wrap(lbl(u["username"] + tag, halign="left")))
             if u["username"] != app.user["username"]:
                 row.add_widget(btn("Sil", lambda *a, uid=u["id"]: self.del_user(uid),
-                                   RED, size_hint_x=0.3))
+                                   PINK, size_hint_x=0.3))
             self.box.add_widget(row)
 
-        self.box.add_widget(lbl("Yeni istifadəçi", size_hint_y=None, height=dp(32),
-                                bold=True, color=ACCENT))
+        self.box.add_widget(lbl("Yeni istifadəçi", size_hint_y=None, height=dp(30),
+                                bold=True, color=CYAN))
         self.new_user = field("İstifadəçi adı")
         self.new_pwd = field("Şifrə", password=True)
-        self.new_admin = ToggleButton(text="Admin olsun", size_hint_y=None, height=dp(46))
-        style_toggle(self.new_admin, GREEN)
+        self.new_admin = RToggle(text="Admin olsun", on=GREEN, size_hint_y=None,
+                                 height=dp(48))
         self.box.add_widget(self.new_user)
         self.box.add_widget(self.new_pwd)
         self.box.add_widget(self.new_admin)
-        self.box.add_widget(lbl("Hansı qrupları görsün?", size_hint_y=None, height=dp(28)))
+        self.box.add_widget(lbl("Hansı qrupları görsün?", size_hint_y=None, height=dp(28),
+                                color=MUTED))
         grid = GridLayout(cols=3, size_hint_y=None, spacing=dp(6))
         grid.bind(minimum_height=grid.setter("height"))
-        self.all_groups = ToggleButton(text="Hamısı", size_hint_y=None, height=dp(46))
-        style_toggle(self.all_groups, GREEN)
+        self.all_groups = RToggle(text="Hamısı", on=GREEN, size_hint_y=None, height=dp(48))
         grid.add_widget(self.all_groups)
         self.group_toggles = {}
         for g in GROUPS:
-            tb = ToggleButton(text=g, size_hint_y=None, height=dp(46))
-            style_toggle(tb, ACCENT)
+            tb = RToggle(text=g, on=CYAN, size_hint_y=None, height=dp(48))
+            tb.color = (0.05, 0.05, 0.05, 1) if False else TEXT
             self.group_toggles[g] = tb
             grid.add_widget(tb)
         self.box.add_widget(grid)
         self.box.add_widget(btn("İstifadəçi əlavə et", self.add_user, GREEN,
-                                size_hint_y=None, height=dp(48)))
+                                size_hint_y=None, height=dp(52)))
 
-        self.box.add_widget(lbl("Yeni kursant", size_hint_y=None, height=dp(32),
-                                bold=True, color=ACCENT))
+        self.box.add_widget(lbl("Yeni kursant", size_hint_y=None, height=dp(30),
+                                bold=True, color=CYAN))
         self.new_trainee = field("Ad, soyad, ata adı")
         self.trainee_group = Spinner(text=GROUPS[0], values=GROUPS, size_hint_y=None,
                                      height=dp(46), background_normal="",
-                                     background_color=ACCENT)
+                                     background_color=CARD2)
         self.box.add_widget(self.new_trainee)
         self.box.add_widget(self.trainee_group)
         self.box.add_widget(btn("Kursant əlavə et", self.add_trainee, GREEN,
-                                size_hint_y=None, height=dp(48)))
+                                size_hint_y=None, height=dp(52)))
 
     def add_user(self, *a):
         app = App.get_running_app()
@@ -523,16 +575,17 @@ class AdminScreen(BaseScreen):
 class HistoryScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
-        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
-        box.add_widget(lbl("Tarixçə", size_hint_y=None, height=dp(32),
-                           bold=True, color=ACCENT))
+        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
+        box.add_widget(lbl("Tarixçə", size_hint_y=None, height=dp(34),
+                           bold=True, color=CYAN, font_size=dp(20)))
         self.list_box = GridLayout(cols=1, size_hint_y=None, spacing=dp(8))
         self.list_box.bind(minimum_height=self.list_box.setter("height"))
         scroll = ScrollView()
         scroll.add_widget(self.list_box)
-        bar = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(6))
-        bar.add_widget(btn("Xeyrləri Word-ə yüklə", self.export, GREEN))
-        bar.add_widget(btn("Geri", lambda *a: setattr(self.manager, "current", "main"), GREY))
+        bar = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(6))
+        bar.add_widget(btn("Word-ə yüklə", self.export, GREEN))
+        bar.add_widget(btn("← Geri", lambda *a: setattr(self.manager, "current", "main"),
+                           CARD2))
         box.add_widget(scroll)
         box.add_widget(bar)
         self.add_widget(box)
@@ -543,7 +596,7 @@ class HistoryScreen(BaseScreen):
         for s in app.db.sessions_for(allowed_groups(app.user)):
             text = "%s\n%s · %d kursant dəyişib" % (s["saved_at"], s["saved_by"], s["cnt"])
             b = wrap(btn(text, lambda *a, sid=s["id"]: self.detail(sid),
-                         CARD, size_hint_y=None, height=dp(66)))
+                         CARD2, size_hint_y=None, height=dp(70)))
             b.halign = "left"
             self.list_box.add_widget(b)
 
@@ -551,7 +604,7 @@ class HistoryScreen(BaseScreen):
         app = App.get_running_app()
         u = app.user
         rows = app.db.session_records(sid, allowed_groups(u))
-        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(6))
+        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
         grid = GridLayout(cols=1, size_hint_y=None, spacing=dp(6))
         grid.bind(minimum_height=grid.setter("height"))
         for r in rows:
@@ -560,7 +613,7 @@ class HistoryScreen(BaseScreen):
                 text += "\nSəbəb: " + r["reason"]
             if r["edited"]:
                 text += "\n(dəyişdirilib)"
-            color = GREEN if r["status"] == "Bəli" else RED
+            color = GREEN if r["status"] == "Bəli" else PINK
             b = wrap(btn(text, None, color, size_hint_y=None, height=dp(66)))
             b.halign = "left"
             if u["is_admin"]:
@@ -569,21 +622,21 @@ class HistoryScreen(BaseScreen):
         scroll = ScrollView()
         scroll.add_widget(grid)
         box.add_widget(scroll)
-        p = Popup(title="Qeyd: %s" % rows[0]["number"] if False else "Tarixçə qeydi",
-                  title_color=ACCENT, content=box, size_hint=(0.95, 0.9))
-        box.add_widget(btn("Bağla", p.dismiss, GREY, size_hint_y=None, height=dp(46)))
+        p = Popup(title="Tarixçə qeydi", title_color=CYAN, separator_color=PINK,
+                  content=box, size_hint=(0.95, 0.9))
+        box.add_widget(btn("← Geri", p.dismiss, CARD2, size_hint_y=None, height=dp(48)))
         p.open()
 
     def edit(self, rid):
         app = App.get_running_app()
         r = app.db.q("SELECT * FROM records WHERE id=?", (rid,))[0]
-        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
+        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
         status = Spinner(text=r["status"], values=["Bəli", "Xeyr"], size_hint_y=None,
-                         height=dp(46), background_normal="", background_color=ACCENT)
+                         height=dp(46), background_normal="", background_color=CARD2)
         reason = field("Səbəb")
         reason.text = r["reason"] or ""
-        p = Popup(title="Qeydi dəyiş", title_color=ACCENT, content=box,
-                  size_hint=(0.9, 0.5))
+        p = Popup(title="Qeydi dəyiş", title_color=CYAN, separator_color=PINK,
+                  content=box, size_hint=(0.9, 0.5))
 
         def save(*a):
             app.db.run("UPDATE records SET status=?, reason=?, edited=1 WHERE id=?",
@@ -593,7 +646,7 @@ class HistoryScreen(BaseScreen):
 
         box.add_widget(status)
         box.add_widget(reason)
-        box.add_widget(btn("Yadda saxla", save, GREEN, size_hint_y=None, height=dp(46)))
+        box.add_widget(btn("Yadda saxla", save, GREEN, size_hint_y=None, height=dp(48)))
         p.open()
 
     def export(self, *a):
