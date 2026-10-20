@@ -23,7 +23,10 @@ jobs:
       - name: Install system packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y git zip unzip autoconf automake libtool pkg-config zlib1g-dev libncurses-dev cmake libffi-dev libssl-dev
+          sudo apt-get install -y git zip unzip autoconf automake libtool pkg-config \
+            cmake libffi-dev libssl-dev zlib1g-dev libncurses5-dev libncursesw5-dev \
+            liblzma-dev libbz2-dev libreadline-dev libsqlite3-dev libgdbm-dev \
+            libgdbm-compat-dev tk-dev uuid-dev libexpat1-dev libdb-dev
 
       - name: Check Java version
         run: java -version
@@ -34,8 +37,6 @@ jobs:
           pip install buildozer==1.5.0 cython==0.29.19
 
       - name: Build APK
-        env:
-          JAVA_HOME: ${{ env.JAVA_HOME }}
         run: buildozer -v android debug
 
       - uses: actions/upload-artifact@v4
