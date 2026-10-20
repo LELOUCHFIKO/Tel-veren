@@ -26,7 +26,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 DB_NAME = "tel_veren_v2.db"
 GROUPS = ["5", "9", "13", "14", "17", "18", "22", "23", "25", "71"]
 MAX_USERS = 20
-DATE_FMT = "%d.%m.%Y %H:%M"
 
 BG = (0.03, 0.03, 0.04, 1)
 CARD = (0.11, 0.11, 0.13, 1)
@@ -36,6 +35,16 @@ CYAN = (0.145, 0.957, 0.933, 1)
 GREEN = (0.19, 0.82, 0.55, 1)
 TEXT = (1, 1, 1, 1)
 MUTED = (0.62, 0.62, 0.67, 1)
+
+
+def today_key():
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def show_day(key):
+    # 2026-10-18 -> 18.10.2026
+    y, m, d = key.split("-")
+    return "%s.%s.%s" % (d, m, y)
 
 
 def sha(text):
@@ -59,7 +68,6 @@ def wrap(widget):
 
 
 class RBtn(Button):
-    # dairəvi düymə: rəngi kanvasda çəkirik
     def __init__(self, bg=CARD2, radius=16, **kw):
         kw.setdefault("color", TEXT)
         super().__init__(**kw)
@@ -185,12 +193,11 @@ class DB:
                 is_admin INTEGER DEFAULT 0, groups TEXT DEFAULT '*');
             CREATE TABLE IF NOT EXISTS trainees (
                 id INTEGER PRIMARY KEY, number INTEGER, name TEXT, grp TEXT);
-            CREATE TABLE IF NOT EXISTS sessions (
-                id INTEGER PRIMARY KEY, saved_at TEXT, saved_by TEXT);
-            CREATE TABLE IF NOT EXISTS records (
-                id INTEGER PRIMARY KEY, session_id INTEGER, trainee_id INTEGER,
+            CREATE TABLE IF NOT EXISTS day_records (
+                id INTEGER PRIMARY KEY, day TEXT, trainee_id INTEGER,
                 number INTEGER, name TEXT, grp TEXT, status TEXT, reason TEXT,
-                edited INTEGER DEFAULT 0);
+                saved_by TEXT, edited INTEGER DEFAULT 0,
+                UNIQUE(day, trainee_id));
         """)
         self.con.commit()
         if not self.q("SELECT 1 FROM trainees"):
@@ -225,40 +232,43 @@ class DB:
     def trainees_in(self, grp):
         return self.q("SELECT * FROM trainees WHERE grp=? ORDER BY number", (grp,))
 
-    def latest_records(self):
-        rows = self.q("""SELECT * FROM records WHERE id IN
-                         (SELECT MAX(id) FROM records GROUP BY trainee_id)""")
+    def latest_status(self):
+        # hər kursantın ən son günkü vəziyyəti
+        rows = self.q("""SELECT d.* FROM day_records d JOIN
+                         (SELECT trainee_id, MAX(day) AS md FROM day_records
+                          GROUP BY trainee_id) m
+                         ON d.trainee_id = m.trainee_id AND d.day = m.md""")
         return {r["trainee_id"]: r for r in rows}
 
-    def save_session(self, user, changes, now):
-        cur = self.con.execute("INSERT INTO sessions (saved_at, saved_by) VALUES (?,?)",
-                               (now, user))
-        sid = cur.lastrowid
-        for tid, status, reason, t in changes:
-            self.con.execute("""INSERT INTO records
-                                (session_id, trainee_id, number, name, grp, status, reason)
-                                VALUES (?,?,?,?,?,?,?)""",
-                             (sid, tid, t["number"], t["name"], t["grp"], status, reason))
+    def upsert_day(self, day, user, items):
+        # eyni gün üçün qeyd varsa yenilənir, yoxdursa yaradılır
+        for tid, status, reason, t in items:
+            self.con.execute("""INSERT INTO day_records
+                (day, trainee_id, number, name, grp, status, reason, saved_by, edited)
+                VALUES (?,?,?,?,?,?,?,?,0)
+                ON CONFLICT(day, trainee_id) DO UPDATE SET
+                    status=excluded.status, reason=excluded.reason,
+                    saved_by=excluded.saved_by, edited=0""",
+                (day, tid, t["number"], t["name"], t["grp"], status, reason, user))
         self.con.commit()
 
-    def sessions_for(self, groups):
+    def days_for(self, groups):
         marks = ",".join("?" * len(groups))
-        return self.q(f"""SELECT s.id, s.saved_at, s.saved_by, COUNT(r.id) AS cnt
-                          FROM sessions s JOIN records r ON r.session_id = s.id
-                          WHERE r.grp IN ({marks})
-                          GROUP BY s.id ORDER BY s.id DESC LIMIT 200""", groups)
+        return self.q(f"""SELECT day, COUNT(*) AS cnt,
+                          SUM(CASE WHEN status='Xeyr' THEN 1 ELSE 0 END) AS xeyr
+                          FROM day_records WHERE grp IN ({marks})
+                          GROUP BY day ORDER BY day DESC""", groups)
 
-    def session_records(self, sid, groups):
+    def day_rows(self, day, groups):
         marks = ",".join("?" * len(groups))
-        return self.q(f"""SELECT * FROM records WHERE session_id = ? AND grp IN ({marks})
-                          ORDER BY number""", [sid] + list(groups))
+        return self.q(f"""SELECT * FROM day_records WHERE day=? AND grp IN ({marks})
+                          ORDER BY number""", [day] + list(groups))
 
     def xeyr_rows(self, groups):
         marks = ",".join("?" * len(groups))
-        return self.q(f"""SELECT s.saved_at, s.saved_by, r.grp, r.number, r.name, r.reason
-                          FROM records r JOIN sessions s ON s.id = r.session_id
-                          WHERE r.status = 'Xeyr' AND r.grp IN ({marks})
-                          ORDER BY s.id DESC, r.number""", groups)
+        return self.q(f"""SELECT day, grp, number, name, reason, saved_by
+                          FROM day_records WHERE status='Xeyr' AND grp IN ({marks})
+                          ORDER BY day DESC, number""", groups)
 
 
 class SetupScreen(BaseScreen):
@@ -368,7 +378,7 @@ class MainScreen(BaseScreen):
         group = self.spinner.text
         if group not in allowed_groups(app.user):
             return
-        self.last = app.db.latest_records()
+        self.last = app.db.latest_status()
         for t in app.db.trainees_in(group):
             self.add_row(t)
 
@@ -427,21 +437,19 @@ class MainScreen(BaseScreen):
 
     def save(self, *_):
         app = App.get_running_app()
-        changes = []
+        items = []
         for tid, (status, why) in self.pending.items():
             if status == "Xeyr" and not why:
                 return info("Diqqət", "Xeyr seçilən hər kursant üçün səbəb yazın")
-            prev = self.last.get(tid)
-            if prev is not None and prev["status"] == status and (prev["reason"] or "") == why:
-                continue
             t = app.db.q("SELECT * FROM trainees WHERE id=?", (tid,))[0]
-            changes.append((tid, status, why, t))
-        if not changes:
+            items.append((tid, status, why, t))
+        if not items:
             return info("Məlumat", "Dəyişiklik yoxdur")
-        now = datetime.now().strftime(DATE_FMT)
-        app.db.save_session(app.user["username"], changes, now)
+        app.db.upsert_day(today_key(), app.user["username"], items)
         self.pending = {}
-        info("Yadda saxlandı", "%d kursant üçün tarixçəyə bir qeyd əlavə olundu" % len(changes))
+        info("Yadda saxlandı",
+             "%d kursant bu günün (%s) tarixçəsinə əlavə olundu"
+             % (len(items), show_day(today_key())))
         self.build_list()
 
     def delete_trainee(self, tid):
@@ -497,192 +505,4 @@ class AdminScreen(BaseScreen):
         for u in users:
             row = panel(size_hint_y=None, height=dp(54), padding=dp(8), spacing=dp(8))
             tag = "  · admin" if u["is_admin"] else ""
-            row.add_widget(wrap(lbl(u["username"] + tag, halign="left")))
-            if u["username"] != app.user["username"]:
-                row.add_widget(btn("Sil", lambda *a, uid=u["id"]: self.del_user(uid),
-                                   PINK, size_hint_x=0.3))
-            self.box.add_widget(row)
-
-        self.box.add_widget(lbl("Yeni istifadəçi", size_hint_y=None, height=dp(30),
-                                bold=True, color=CYAN))
-        self.new_user = field("İstifadəçi adı")
-        self.new_pwd = field("Şifrə", password=True)
-        self.new_admin = RToggle(text="Admin olsun", on=GREEN, size_hint_y=None,
-                                 height=dp(48))
-        self.box.add_widget(self.new_user)
-        self.box.add_widget(self.new_pwd)
-        self.box.add_widget(self.new_admin)
-        self.box.add_widget(lbl("Hansı qrupları görsün?", size_hint_y=None, height=dp(28),
-                                color=MUTED))
-        grid = GridLayout(cols=3, size_hint_y=None, spacing=dp(6))
-        grid.bind(minimum_height=grid.setter("height"))
-        self.all_groups = RToggle(text="Hamısı", on=GREEN, size_hint_y=None, height=dp(48))
-        grid.add_widget(self.all_groups)
-        self.group_toggles = {}
-        for g in GROUPS:
-            tb = RToggle(text=g, on=CYAN, size_hint_y=None, height=dp(48))
-            tb.color = (0.05, 0.05, 0.05, 1) if False else TEXT
-            self.group_toggles[g] = tb
-            grid.add_widget(tb)
-        self.box.add_widget(grid)
-        self.box.add_widget(btn("İstifadəçi əlavə et", self.add_user, GREEN,
-                                size_hint_y=None, height=dp(52)))
-
-        self.box.add_widget(lbl("Yeni kursant", size_hint_y=None, height=dp(30),
-                                bold=True, color=CYAN))
-        self.new_trainee = field("Ad, soyad, ata adı")
-        self.trainee_group = Spinner(text=GROUPS[0], values=GROUPS, size_hint_y=None,
-                                     height=dp(46), background_normal="",
-                                     background_color=CARD2)
-        self.box.add_widget(self.new_trainee)
-        self.box.add_widget(self.trainee_group)
-        self.box.add_widget(btn("Kursant əlavə et", self.add_trainee, GREEN,
-                                size_hint_y=None, height=dp(52)))
-
-    def add_user(self, *a):
-        app = App.get_running_app()
-        name = self.new_user.text.strip()
-        pwd = self.new_pwd.text
-        if len(app.db.q("SELECT id FROM users")) >= MAX_USERS:
-            return info("Xəta", "Ən çox %d istifadəçi ola bilər" % MAX_USERS)
-        if not name or not pwd:
-            return info("Xəta", "Ad və şifrə yazın")
-        if self.all_groups.state == "down":
-            groups = "*"
-        else:
-            groups = ",".join(g for g, tb in self.group_toggles.items() if tb.state == "down")
-        if not groups:
-            return info("Xəta", "Ən azı bir qrup seçin")
-        if not app.db.add_user(name, pwd, self.new_admin.state == "down", groups):
-            return info("Xəta", "Bu ad artıq var")
-        self.load()
-
-    def del_user(self, uid):
-        App.get_running_app().db.run("DELETE FROM users WHERE id=?", (uid,))
-        self.load()
-
-    def add_trainee(self, *a):
-        app = App.get_running_app()
-        name = self.new_trainee.text.strip()
-        if not name:
-            return info("Xəta", "Kursantın adını yazın")
-        app.db.add_trainee(name, self.trainee_group.text)
-        self.new_trainee.text = ""
-        info("Hazırdır", "Kursant əlavə olundu")
-        self.load()
-
-
-class HistoryScreen(BaseScreen):
-    def __init__(self, **kw):
-        super().__init__(**kw)
-        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
-        box.add_widget(lbl("Tarixçə", size_hint_y=None, height=dp(34),
-                           bold=True, color=CYAN, font_size=dp(20)))
-        self.list_box = GridLayout(cols=1, size_hint_y=None, spacing=dp(8))
-        self.list_box.bind(minimum_height=self.list_box.setter("height"))
-        scroll = ScrollView()
-        scroll.add_widget(self.list_box)
-        bar = BoxLayout(size_hint_y=None, height=dp(52), spacing=dp(6))
-        bar.add_widget(btn("Word-ə yüklə", self.export, GREEN))
-        bar.add_widget(btn("← Geri", lambda *a: setattr(self.manager, "current", "main"),
-                           CARD2))
-        box.add_widget(scroll)
-        box.add_widget(bar)
-        self.add_widget(box)
-
-    def load(self):
-        app = App.get_running_app()
-        self.list_box.clear_widgets()
-        for s in app.db.sessions_for(allowed_groups(app.user)):
-            text = "%s\n%s · %d kursant dəyişib" % (s["saved_at"], s["saved_by"], s["cnt"])
-            b = wrap(btn(text, lambda *a, sid=s["id"]: self.detail(sid),
-                         CARD2, size_hint_y=None, height=dp(70)))
-            b.halign = "left"
-            self.list_box.add_widget(b)
-
-    def detail(self, sid):
-        app = App.get_running_app()
-        u = app.user
-        rows = app.db.session_records(sid, allowed_groups(u))
-        box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
-        grid = GridLayout(cols=1, size_hint_y=None, spacing=dp(6))
-        grid.bind(minimum_height=grid.setter("height"))
-        for r in rows:
-            text = "%d. %s — %s" % (r["number"], r["name"], r["status"])
-            if r["reason"]:
-                text += "\nSəbəb: " + r["reason"]
-            if r["edited"]:
-                text += "\n(dəyişdirilib)"
-            color = GREEN if r["status"] == "Bəli" else PINK
-            b = wrap(btn(text, None, color, size_hint_y=None, height=dp(66)))
-            b.halign = "left"
-            if u["is_admin"]:
-                b.bind(on_release=lambda *a, rid=r["id"]: self.edit(rid))
-            grid.add_widget(b)
-        scroll = ScrollView()
-        scroll.add_widget(grid)
-        box.add_widget(scroll)
-        p = Popup(title="Tarixçə qeydi", title_color=CYAN, separator_color=PINK,
-                  content=box, size_hint=(0.95, 0.9))
-        box.add_widget(btn("← Geri", p.dismiss, CARD2, size_hint_y=None, height=dp(48)))
-        p.open()
-
-    def edit(self, rid):
-        app = App.get_running_app()
-        r = app.db.q("SELECT * FROM records WHERE id=?", (rid,))[0]
-        box = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
-        status = Spinner(text=r["status"], values=["Bəli", "Xeyr"], size_hint_y=None,
-                         height=dp(46), background_normal="", background_color=CARD2)
-        reason = field("Səbəb")
-        reason.text = r["reason"] or ""
-        p = Popup(title="Qeydi dəyiş", title_color=CYAN, separator_color=PINK,
-                  content=box, size_hint=(0.9, 0.5))
-
-        def save(*a):
-            app.db.run("UPDATE records SET status=?, reason=?, edited=1 WHERE id=?",
-                       (status.text, reason.text.strip(), rid))
-            p.dismiss()
-            info("Hazırdır", "Dəyişiklik yadda saxlandı. Qeydi yenidən açın.")
-
-        box.add_widget(status)
-        box.add_widget(reason)
-        box.add_widget(btn("Yadda saxla", save, GREEN, size_hint_y=None, height=dp(48)))
-        p.open()
-
-    def export(self, *a):
-        app = App.get_running_app()
-        lines = ["Tel verməyənlər siyahısı", ""]
-        for r in app.db.xeyr_rows(allowed_groups(app.user)):
-            lines.append(" | ".join([r["saved_at"], r["grp"], str(r["number"]),
-                                     r["name"], r["reason"] or "", r["saved_by"]]))
-        path = None
-        for folder in ("/sdcard/Download", app.user_data_dir):
-            try:
-                path = os.path.join(folder, "xeyr_siyahisi.docx")
-                make_docx(path, lines)
-                break
-            except OSError:
-                path = None
-        if path is None:
-            return info("Xəta", "Fayl yazıla bilmədi")
-        info("Hazırdır", "Fayl yadda saxlanıldı:\n" + path)
-
-
-class TelApp(App):
-    title = "Tel verən və verməyən"
-
-    def build(self):
-        Window.clearcolor = BG
-        self.db = DB(os.path.join(self.user_data_dir, DB_NAME))
-        self.user = None
-        sm = ScreenManager()
-        for screen in (SetupScreen(name="setup"), LoginScreen(name="login"),
-                       MainScreen(name="main"), HistoryScreen(name="history"),
-                       AdminScreen(name="admin")):
-            sm.add_widget(screen)
-        sm.current = "login" if self.db.q("SELECT 1 FROM users") else "setup"
-        return sm
-
-
-if __name__ == "__main__":
-    TelApp().run()
+            row.add_widget(wra
