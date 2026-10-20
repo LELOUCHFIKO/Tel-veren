@@ -25,10 +25,9 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.togglebutton import ToggleButton
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PROJECT = "tel-veren"
-API_KEY = "AIzaSyDGI-dvBUBRAky8fuCE1xQaFlMLXJa2wwQ"
-BASE = "https://firestore.googleapis.com/v1/projects/%s/databases/(default)/documents" % PROJECT
-DOC_PREFIX = "projects/%s/databases/(default)/documents/" % PROJECT
+SUPABASE_URL = "https://zpklhqanmxswvdxiupcf.supabase.co"
+SUPABASE_KEY = "sb_publishable_lZZpnO0HhMQUN1DVk175Nw_UfBFMtNw"
+REST = SUPABASE_URL + "/rest/v1"
 GROUPS = ["5", "9", "13", "14", "17", "18", "22", "23", "25", "71"]
 MAX_USERS = 20
 
@@ -42,98 +41,99 @@ TEXT = (1, 1, 1, 1)
 MUTED = (0.62, 0.62, 0.67, 1)
 
 
-# ---------- Firestore (REST) ----------
+# ---------- Supabase (REST) ----------
 
-def enc(v):
-    if v is None:
-        return {"nullValue": None}
-    if isinstance(v, bool):
-        return {"booleanValue": v}
-    if isinstance(v, int):
-        return {"integerValue": str(v)}
-    return {"stringValue": str(v)}
-
-
-def dec(v):
-    if "integerValue" in v:
-        return int(v["integerValue"])
-    if "booleanValue" in v:
-        return v["booleanValue"]
-    if "nullValue" in v:
-        return None
-    return v.get("stringValue", "")
-
-
-def fields_of(data):
-    return {k: enc(v) for k, v in data.items()}
-
-
-def doc_data(doc):
-    out = {k: dec(v) for k, v in doc.get("fields", {}).items()}
-    out["_id"] = doc["name"].split("/")[-1]
-    return out
-
-
-def check(r):
-    if r.status_code >= 400:
-        raise RuntimeError("HTTP %s\n%s" % (r.status_code, r.text[:600]))
-
-
-def url(path):
-    return BASE + "/" + path + "?key=" + API_KEY
-
-
-class Cloud:
+class SB:
     def __init__(self):
         self.s = requests.Session()
+        self.s.headers.update({
+            "apikey": SUPABASE_KEY,
+            "Content-Type": "application/json",
+        })
 
-    def get(self, path):
-        r = self.s.get(url(path), timeout=20)
-        if r.status_code == 404:
+    def req(self, method, table, params=None, body=None, prefer=None):
+        headers = {"Prefer": prefer} if prefer else {}
+        r = self.s.request(method, REST + "/" + table, params=params,
+                           json=body, headers=headers, timeout=20)
+        if r.status_code >= 400:
+            raise RuntimeError("HTTP %s\n%s" % (r.status_code, r.text[:600]))
+        if not r.text:
             return None
-        check(r)
-        return doc_data(r.json())
+        return r.json()
 
-    def list(self, path):
-        out, token = [], None
-        while True:
-            params = {"pageSize": 300}
-            if token:
-                params["pageToken"] = token
-            r = self.s.get(url(path), params=params, timeout=20)
-            if r.status_code == 404:
-                return out
-            check(r)
-            data = r.json()
-            for doc in data.get("documents", []):
-                out.append(doc_data(doc))
-            token = data.get("nextPageToken")
-            if not token:
-                return out
+    def select(self, table, **params):
+        params.setdefault("select", "*")
+        return self.req("GET", table, params=params) or []
 
-    def set(self, path, data):
-        params = [("updateMask.fieldPaths", k) for k in data]
-        r = self.s.patch(url(path), params=params,
-                         json={"fields": fields_of(data)}, timeout=20)
-        check(r)
+    def user_get(self, name):
+        rows = self.select("users", username="eq." + name)
+        return rows[0] if rows else None
 
-    def delete(self, path):
-        r = self.s.delete(url(path), timeout=20)
-        if r.status_code != 404:
-            check(r)
+    def user_list(self):
+        return self.select("users", order="username.asc")
 
-    def seed(self, docs):
-        for i in range(0, len(docs), 300):
-            writes = []
-            for path, data in docs[i:i + 300]:
-                writes.append({"update": {"name": DOC_PREFIX + path,
-                                          "fields": fields_of(data)}})
-            r = self.s.post(BASE + ":batchWrite?key=" + API_KEY,
-                            json={"writes": writes}, timeout=60)
-            check(r)
+    def user_add(self, name, pwd, is_admin, groups):
+        self.req("POST", "users", body={"username": name, "pwd": pwd,
+                                        "is_admin": is_admin, "groups": groups},
+                 prefer="return=minimal")
+
+    def user_del(self, name):
+        self.req("DELETE", "users", params={"username": "eq." + name},
+                 prefer="return=minimal")
+
+    def trainee_list(self):
+        return self.select("trainees", order="number.asc")
+
+    def trainee_has_any(self):
+        return bool(self.select("trainees", select="id", limit=1))
+
+    def trainee_seed(self, rows):
+        for i in range(0, len(rows), 200):
+            self.req("POST", "trainees", body=rows[i:i + 200], prefer="return=minimal")
+
+    def trainee_add(self, number, name, grp):
+        self.req("POST", "trainees", body={"number": number, "name": name, "grp": grp,
+                                           "last_status": None, "last_reason": None},
+                 prefer="return=minimal")
+
+    def trainee_max_number(self):
+        rows = self.select("trainees", select="number", order="number.desc", limit=1)
+        return rows[0]["number"] if rows else 0
+
+    def trainee_update(self, tid, data):
+        self.req("PATCH", "trainees", params={"id": "eq.%d" % tid},
+                 body=data, prefer="return=minimal")
+
+    def trainee_delete(self, tid):
+        self.req("DELETE", "trainees", params={"id": "eq.%d" % tid},
+                 prefer="return=minimal")
+
+    def day_list(self):
+        rows = self.select("day_records", select="day", order="day.desc")
+        seen, out = set(), []
+        for r in rows:
+            if r["day"] not in seen:
+                seen.add(r["day"])
+                out.append(r["day"])
+        return out
+
+    def day_rows(self, day):
+        return self.select("day_records", day="eq." + day, order="number.asc")
+
+    def day_save(self, rows):
+        self.req("POST", "day_records", params={"on_conflict": "day,trainee_id"},
+                 body=rows, prefer="resolution=merge-duplicates,return=minimal")
+
+    def day_update(self, rid, data):
+        self.req("PATCH", "day_records", params={"id": "eq.%d" % rid},
+                 body=data, prefer="return=minimal")
+
+    def xeyr_rows(self):
+        return self.select("day_records", status="eq.Xeyr",
+                           order="day.desc,number.asc")
 
 
-CLOUD = Cloud()
+SB_ = SB()
 
 
 def bg(work, done=None):
@@ -193,15 +193,13 @@ def allowed_groups(user):
     return [g for g in user["groups"].split(",") if g]
 
 
-def seed_docs():
-    docs = []
+def seed_rows():
+    rows = []
     with open(os.path.join(HERE, "trainees.csv"), encoding="utf-8") as f:
         for row in csv.DictReader(f):
-            n = int(row["number"])
-            docs.append(("trainees/k%d" % n, {
-                "number": n, "name": row["name"], "grp": row["group"],
-                "last_status": "", "last_reason": ""}))
-    return docs
+            rows.append({"number": int(row["number"]), "name": row["name"],
+                         "grp": row["group"], "last_status": None, "last_reason": None})
+    return rows
 
 
 def make_docx(path, lines):
@@ -331,9 +329,9 @@ class LoadingScreen(BaseScreen):
         bg(self.work, self.finish)
 
     def work(self):
-        users = CLOUD.list("users")
-        if not CLOUD.list("trainees"):
-            CLOUD.seed(seed_docs())
+        users = SB_.user_list()
+        if not SB_.trainee_has_any():
+            SB_.trainee_seed(seed_rows())
         return len(users) > 0
 
     def finish(self, has_users):
@@ -368,9 +366,9 @@ class SetupScreen(BaseScreen):
             return info("Xəta", "Şifrələr uyğun gəlmir")
 
         def work():
-            if CLOUD.get("users/%s" % name) is not None:
+            if SB_.user_get(name) is not None:
                 return False
-            CLOUD.set("users/%s" % name, {"pwd": sha(pwd), "is_admin": True, "groups": "*"})
+            SB_.user_add(name, sha(pwd), True, "*")
             return True
 
         def done(ok):
@@ -408,20 +406,17 @@ class LoginScreen(BaseScreen):
         if not name or "/" in name:
             return info("Xəta", "İstifadəçi adını yazın")
 
-        def work():
-            return CLOUD.get("users/%s" % name)
-
         def done(doc):
             if not doc or doc.get("pwd") != pwd:
                 return info("Xəta", "İstifadəçi adı və ya şifrə yanlışdır")
             app.user = {"username": name,
                         "is_admin": bool(doc.get("is_admin")),
-                        "groups": doc.get("groups", "*")}
+                        "groups": doc.get("groups") or "*"}
             self.pwd_in.text = ""
             self.manager.current = "main"
             self.manager.get_screen("main").load()
 
-        bg(work, done)
+        bg(lambda: SB_.user_get(name), done)
 
 
 class MainScreen(BaseScreen):
@@ -459,11 +454,11 @@ class MainScreen(BaseScreen):
         self.spinner.text = groups[0]
         self.admin_btn.opacity = 1 if u["is_admin"] else 0
         self.admin_btn.disabled = not u["is_admin"]
-        bg(lambda: CLOUD.list("trainees"), self.loaded)
+        bg(lambda: SB_.trainee_list(), self.loaded)
 
     def loaded(self, trainees):
-        self.all = sorted(trainees, key=lambda t: t["number"])
-        self.by_id = {t["_id"]: t for t in self.all}
+        self.all = trainees
+        self.by_id = {t["id"]: t for t in trainees}
         self.header.text = "Salam, %s" % App.get_running_app().user["username"]
         self.build_list()
 
@@ -479,7 +474,7 @@ class MainScreen(BaseScreen):
 
     def add_row(self, t):
         app = App.get_running_app()
-        tid = t["_id"]
+        tid = t["id"]
         if tid in self.pending:
             status, reason = self.pending[tid]
         else:
@@ -491,9 +486,9 @@ class MainScreen(BaseScreen):
         top = BoxLayout(size_hint_y=None, height=dp(44), spacing=dp(6))
         top.add_widget(lbl(str(t["number"]), size_hint_x=0.12, bold=True, color=CYAN))
         top.add_widget(wrap(lbl(t["name"], halign="left", size_hint_x=0.4)))
-        yes = RToggle(text="Bəli", group="t%s" % tid, on=GREEN, size_hint_x=0.16,
+        yes = RToggle(text="Bəli", group="t%d" % tid, on=GREEN, size_hint_x=0.16,
                       state="down" if status == "Bəli" else "normal")
-        no = RToggle(text="Xeyr", group="t%s" % tid, on=PINK, size_hint_x=0.16,
+        no = RToggle(text="Xeyr", group="t%d" % tid, on=PINK, size_hint_x=0.16,
                      state="down" if status == "Xeyr" else "normal")
         top.add_widget(yes)
         top.add_widget(no)
@@ -547,18 +542,18 @@ class MainScreen(BaseScreen):
         user = app.user["username"]
 
         def work():
-            CLOUD.set("days/%s" % day, {"day": day})
+            rows = [{"day": day, "trainee_id": t["id"], "number": t["number"],
+                     "name": t["name"], "grp": t["grp"], "status": status,
+                     "reason": why, "saved_by": user, "edited": False}
+                    for t, status, why in items]
+            SB_.day_save(rows)
             for t, status, why in items:
-                CLOUD.set("days/%s/trainees/%s" % (day, t["_id"]), {
-                    "number": t["number"], "name": t["name"], "grp": t["grp"],
-                    "status": status, "reason": why, "saved_by": user, "edited": False})
-                CLOUD.set("trainees/%s" % t["_id"], {
-                    "last_status": status, "last_reason": why})
+                SB_.trainee_update(t["id"], {"last_status": status, "last_reason": why})
             return len(items)
 
         def done(n):
             for t, status, why in items:
-                cached = self.by_id.get(t["_id"])
+                cached = self.by_id.get(t["id"])
                 if cached is not None:
                     cached["last_status"] = status
                     cached["last_reason"] = why
@@ -581,11 +576,11 @@ class MainScreen(BaseScreen):
 
             def done(_):
                 self.pending.pop(tid, None)
-                self.all = [t for t in self.all if t["_id"] != tid]
+                self.all = [t for t in self.all if t["id"] != tid]
                 self.by_id.pop(tid, None)
                 self.build_list()
 
-            bg(lambda: CLOUD.delete("trainees/%s" % tid), done)
+            bg(lambda: SB_.trainee_delete(tid), done)
 
         row.add_widget(btn("Bəli, sil", yes, PINK))
         row.add_widget(btn("Xeyr", lambda *a: p.dismiss(), CARD2))
@@ -605,7 +600,6 @@ class MainScreen(BaseScreen):
 class AdminScreen(BaseScreen):
     def __init__(self, **kw):
         super().__init__(**kw)
-        self.user_count = 0
         root = BoxLayout(orientation="vertical", padding=dp(10), spacing=dp(8))
         top = BoxLayout(size_hint_y=None, height=dp(50), spacing=dp(8))
         top.add_widget(btn("← Geri", lambda *a: setattr(self.manager, "current", "main"),
@@ -620,20 +614,19 @@ class AdminScreen(BaseScreen):
         self.add_widget(root)
 
     def load(self):
-        bg(lambda: CLOUD.list("users"), self.render)
+        bg(lambda: SB_.user_list(), self.render)
 
     def render(self, users):
         app = App.get_running_app()
-        self.user_count = len(users)
         self.box.clear_widgets()
         self.box.add_widget(lbl("İstifadəçilər (%d/%d)" % (len(users), MAX_USERS),
                                 size_hint_y=None, height=dp(30), bold=True, color=CYAN))
         for u in users:
             row = panel(size_hint_y=None, height=dp(54), padding=dp(8), spacing=dp(8))
             tag = "  · admin" if u.get("is_admin") else ""
-            row.add_widget(wrap(lbl(u["_id"] + tag, halign="left")))
-            if u["_id"] != app.user["username"]:
-                row.add_widget(btn("Sil", lambda *a, name=u["_id"]: self.del_user(name),
+            row.add_widget(wrap(lbl(u["username"] + tag, halign="left")))
+            if u["username"] != app.user["username"]:
+                row.add_widget(btn("Sil", lambda *a, name=u["username"]: self.del_user(name),
                                    PINK, size_hint_x=0.3))
             self.box.add_widget(row)
 
@@ -686,13 +679,12 @@ class AdminScreen(BaseScreen):
         is_admin = self.new_admin.state == "down"
 
         def work():
-            users = CLOUD.list("users")
+            users = SB_.user_list()
             if len(users) >= MAX_USERS:
                 return "full"
-            if any(u["_id"] == name for u in users):
+            if any(u["username"] == name for u in users):
                 return "exists"
-            CLOUD.set("users/%s" % name, {"pwd": sha(pwd), "is_admin": is_admin,
-                                          "groups": groups})
+            SB_.user_add(name, sha(pwd), is_admin, groups)
             return "ok"
 
         def done(res):
@@ -708,7 +700,7 @@ class AdminScreen(BaseScreen):
         bg(work, done)
 
     def del_user(self, name):
-        bg(lambda: CLOUD.delete("users/%s" % name), lambda _: self.load())
+        bg(lambda: SB_.user_del(name), lambda _: self.load())
 
     def add_trainee(self, *a):
         name = self.new_trainee.text.strip()
@@ -717,10 +709,8 @@ class AdminScreen(BaseScreen):
             return info("Xəta", "Kursantın adını yazın")
 
         def work():
-            trainees = CLOUD.list("trainees")
-            n = max([t["number"] for t in trainees] or [0]) + 1
-            CLOUD.set("trainees/k%d" % n, {"number": n, "name": name, "grp": grp,
-                                           "last_status": "", "last_reason": ""})
+            n = SB_.trainee_max_number() + 1
+            SB_.trainee_add(n, name, grp)
             return n
 
         def done(n):
@@ -749,13 +739,11 @@ class HistoryScreen(BaseScreen):
         self.add_widget(box)
 
     def load(self):
-        bg(lambda: sorted(CLOUD.list("days"), key=lambda d: d["_id"], reverse=True),
-           self.render)
+        bg(lambda: SB_.day_list(), self.render)
 
     def render(self, days):
         self.list_box.clear_widgets()
-        for d in days:
-            day = d["_id"]
+        for day in days:
             b = wrap(btn(show_day(day), lambda *a, day=day: self.detail(day),
                          CARD2, size_hint_y=None, height=dp(60)))
             b.halign = "left"
@@ -768,10 +756,9 @@ class HistoryScreen(BaseScreen):
 
         def done(rows):
             rows = [r for r in rows if r.get("grp") in groups]
-            rows.sort(key=lambda r: r["number"])
             self.show_day_popup(day, rows, is_admin)
 
-        bg(lambda: CLOUD.list("days/%s/trainees" % day), done)
+        bg(lambda: SB_.day_rows(day), done)
 
     def show_day_popup(self, day, rows, is_admin):
         box = BoxLayout(orientation="vertical", padding=dp(8), spacing=dp(8))
@@ -815,10 +802,12 @@ class HistoryScreen(BaseScreen):
             p.dismiss()
 
             def work():
-                CLOUD.set("days/%s/trainees/%s" % (day, row["_id"]), {
-                    "status": new_status, "reason": new_reason, "edited": True})
-                CLOUD.set("trainees/%s" % row["_id"], {
-                    "last_status": new_status, "last_reason": new_reason})
+                SB_.day_update(row["id"], {"status": new_status,
+                                           "reason": new_reason, "edited": True})
+                if row.get("trainee_id") is not None:
+                    SB_.trainee_update(row["trainee_id"],
+                                       {"last_status": new_status,
+                                        "last_reason": new_reason})
                 return True
 
             bg(work, lambda _: self.detail(day))
@@ -834,12 +823,11 @@ class HistoryScreen(BaseScreen):
 
         def work():
             lines = ["Tel verməyənlər siyahısı", ""]
-            for d in sorted(CLOUD.list("days"), key=lambda x: x["_id"], reverse=True):
-                for r in CLOUD.list("days/%s/trainees" % d["_id"]):
-                    if r.get("status") == "Xeyr" and r.get("grp") in groups:
-                        lines.append(" | ".join([
-                            show_day(d["_id"]), r["grp"], str(r["number"]),
-                            r["name"], r.get("reason") or "", r.get("saved_by") or ""]))
+            for r in SB_.xeyr_rows():
+                if r.get("grp") in groups:
+                    lines.append(" | ".join([
+                        show_day(r["day"]), r["grp"], str(r["number"]),
+                        r["name"], r.get("reason") or "", r.get("saved_by") or ""]))
             for folder in ("/sdcard/Download", App.get_running_app().user_data_dir):
                 try:
                     path = os.path.join(folder, "xeyr_siyahisi.docx")
