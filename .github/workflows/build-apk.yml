@@ -11,11 +11,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build APK with Buildozer container
+      - name: Restore Buildozer cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: buildozer-${{ runner.os }}-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            buildozer-${{ runner.os }}-
+
+      - name: Prepare cache folder
         run: |
-          docker run --rm \
-            -v "$PWD":/home/user/hostcwd \
-            kivy/buildozer android debug
+          mkdir -p ~/.buildozer
+          sudo chown -R 1000:1000 ~/.buildozer
+
+      - name: Build APK (with retries)
+        run: |
+          for i in 1 2 3; do
+            docker run --rm \
+              -v "$PWD":/home/user/hostcwd \
+              -v "$HOME/.buildozer":/home/user/.buildozer \
+              kivy/buildozer android debug && exit 0
+            echo "Cəhd $i uğursuz oldu, 5 dəqiqə sonra yenidən cəhd olunacaq"
+            sleep 300
+          done
+          exit 1
 
       - uses: actions/upload-artifact@v4
         with:
