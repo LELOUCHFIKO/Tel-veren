@@ -103,7 +103,6 @@ class Cloud:
                 return out
 
     def set(self, path, data):
-        # yalnız göndərilən sahələr yenilənir, qalanları qalır
         params = [("updateMask.fieldPaths", k) for k in data]
         r = self.s.patch(BASE + "/" + path, params=params,
                          json={"fields": fields_of(data)}, timeout=20)
@@ -128,7 +127,6 @@ CLOUD = Cloud()
 
 
 def bg(work, done=None):
-    # şəbəkə işi arxa planda gedir, ekran donmur
     def run():
         result, err = None, None
         try:
@@ -163,9 +161,10 @@ def sha(text):
 
 
 def info(title, text):
+    lab = Label(text=text, color=TEXT, halign="center", valign="middle")
+    lab.bind(width=lambda w, s: setattr(w, "text_size", (s, None)))
     Popup(title=title, title_color=CYAN, separator_color=PINK,
-          content=Label(text=text, color=TEXT),
-          size_hint=(0.85, 0.35)).open()
+          content=lab, size_hint=(0.9, 0.5)).open()
 
 
 def lbl(text, **kw):
