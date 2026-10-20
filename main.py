@@ -26,11 +26,11 @@ from kivy.uix.togglebutton import ToggleButton
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJECT = "tel-veren"
+API_KEY = "AIzaSyDGI-dvBUBRAky8fuCE1xQaFlMLXJa2wwQ"
 BASE = "https://firestore.googleapis.com/v1/projects/%s/databases/(default)/documents" % PROJECT
 DOC_PREFIX = "projects/%s/databases/(default)/documents/" % PROJECT
 GROUPS = ["5", "9", "13", "14", "17", "18", "22", "23", "25", "71"]
 MAX_USERS = 20
-DATE_FMT = "%d.%m.%Y"
 
 BG = (0.03, 0.03, 0.04, 1)
 CARD = (0.11, 0.11, 0.13, 1)
@@ -74,15 +74,24 @@ def doc_data(doc):
     return out
 
 
+def check(r):
+    if r.status_code >= 400:
+        raise RuntimeError("HTTP %s\n%s" % (r.status_code, r.text[:600]))
+
+
+def url(path):
+    return BASE + "/" + path + "?key=" + API_KEY
+
+
 class Cloud:
     def __init__(self):
         self.s = requests.Session()
 
     def get(self, path):
-        r = self.s.get(BASE + "/" + path, timeout=20)
+        r = self.s.get(url(path), timeout=20)
         if r.status_code == 404:
             return None
-        r.raise_for_status()
+        check(r)
         return doc_data(r.json())
 
     def list(self, path):
@@ -91,10 +100,10 @@ class Cloud:
             params = {"pageSize": 300}
             if token:
                 params["pageToken"] = token
-            r = self.s.get(BASE + "/" + path, params=params, timeout=20)
+            r = self.s.get(url(path), params=params, timeout=20)
             if r.status_code == 404:
                 return out
-            r.raise_for_status()
+            check(r)
             data = r.json()
             for doc in data.get("documents", []):
                 out.append(doc_data(doc))
@@ -104,14 +113,14 @@ class Cloud:
 
     def set(self, path, data):
         params = [("updateMask.fieldPaths", k) for k in data]
-        r = self.s.patch(BASE + "/" + path, params=params,
+        r = self.s.patch(url(path), params=params,
                          json={"fields": fields_of(data)}, timeout=20)
-        r.raise_for_status()
+        check(r)
 
     def delete(self, path):
-        r = self.s.delete(BASE + "/" + path, timeout=20)
+        r = self.s.delete(url(path), timeout=20)
         if r.status_code != 404:
-            r.raise_for_status()
+            check(r)
 
     def seed(self, docs):
         for i in range(0, len(docs), 300):
@@ -119,8 +128,9 @@ class Cloud:
             for path, data in docs[i:i + 300]:
                 writes.append({"update": {"name": DOC_PREFIX + path,
                                           "fields": fields_of(data)}})
-            r = self.s.post(BASE + ":batchWrite", json={"writes": writes}, timeout=60)
-            r.raise_for_status()
+            r = self.s.post(BASE + ":batchWrite?key=" + API_KEY,
+                            json={"writes": writes}, timeout=60)
+            check(r)
 
 
 CLOUD = Cloud()
